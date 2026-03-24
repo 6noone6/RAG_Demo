@@ -4,7 +4,7 @@ langchain-classic
 langchain-openai
 langchain-community
 chromadb
-pypdf
+pymupdf
 python-dotenv
 tiktoken
 docx2txt

@@ -1,5 +1,5 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader, CSVLoader
+from langchain_community.document_loaders import PyMuPDFLoader, TextLoader, Docx2txtLoader, CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
@@ -12,7 +12,7 @@ def load_and_split_document(file_path):
 
     # 2. 路由分配加载器
     if file_extension == '.pdf':
-        loader = PyPDFLoader(file_path)
+        loader = PyMuPDFLoader(file_path)
     elif file_extension == '.txt':
         # txt 文件容易出现编码问题，强制指定 utf-8
         loader = TextLoader(file_path, encoding='utf-8')
