@@ -4,7 +4,11 @@ langchain-classic
 langchain-openai
 langchain-community
 chromadb
-pymupdf
 python-dotenv
 tiktoken
 docx2txt
+cohere
+langchain-cohere
+pi_heif  # 专门用来优化云端图像处理速度的轻量库
+langchain-unstructured
+unstructured[pdf]

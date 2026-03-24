@@ -2,7 +2,9 @@ import os
 import tempfile
 import streamlit as st
 from dotenv import load_dotenv
+from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_openai import ChatOpenAI
+from langchain_cohere import CohereRerank
 
 # 处理消息历史和占位符的核心模块
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -53,6 +55,12 @@ with st.sidebar:
                     st.session_state.vector_db = create_memory_db(chunks)
 
                     st.session_state.db_ready = True
+
+                    # 🌟 Debug 专用：在侧边栏预览前三个块，看看是不是还是只有标题
+                    with st.expander("📝 知识库切片预览"):
+                        for i in range(min(3, len(chunks))):
+                            st.text(f"块 {i + 1}: {chunks[i].page_content[:100]}...")
+
                     st.session_state.chat_history = []  # 清空历史，防止串台
                     st.success(f"✅ 构建成功！共处理 {len(chunks)} 个文本块。")
                 except Exception as e:
@@ -96,7 +104,24 @@ if st.session_state.db_ready:
                 # 🌟 改动点 3：不再调函数重新读取硬盘，直接从口袋里掏出当前激活的数据库
                 vector_db = st.session_state.vector_db
 
-                retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+                # ================= 🌟 进阶：商业级 Rerank 重排机制 =================
+                # 1. 第一阶段（粗排）：广撒网，先从底层数据库快速捞出 Top 10
+                base_retriever = vector_db.as_retriever(search_kwargs={"k": 10})
+
+                # 2. 第二阶段（精排）：调用 Cohere 顶级重排 API
+                # 特别注意：我们指定了 multilingual 模型，这对于中文和中英混排文档极其强悍！
+                compressor = CohereRerank(
+                    cohere_api_key=os.getenv("COHERE_API_KEY"),
+                    model="rerank-multilingual-v3.0",
+                    top_n=3
+                )
+
+                # 3. 组装成“终极检索器”
+                retriever = ContextualCompressionRetriever(
+                    base_compressor=compressor,
+                    base_retriever=base_retriever
+                )
+                # =========================================================
 
                 # 注意：我看你上面写了 gpt-5-chat-latest，我原封不动保留了你的配置
                 llm = ChatOpenAI(
