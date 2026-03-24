@@ -30,11 +30,16 @@ if "chat_history" not in st.session_state:
 # ================= 侧边栏：文件上传 =================
 with st.sidebar:
     st.header("📁 知识库管理")
-    uploaded_file = st.file_uploader("请上传 PDF 文档", type="pdf")
+    # 允许用户上传多种格式
+    uploaded_file = st.file_uploader("请上传知识库文档", type=["pdf", "txt", "docx", "csv"])
 
     if st.button("开始构建知识库") and uploaded_file is not None:
         with st.spinner("正在调度底层模块处理数据..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            # 1. 动态提取上传文件的原始后缀名
+            file_extension = os.path.splitext(uploaded_file.name)[1]
+
+            # 2. 把动态后缀名赋给临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
                 tmp_file_path = tmp_file.name
 
