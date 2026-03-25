@@ -2,3 +2,4 @@
 chroma_db_dynamic/
 __pycache__/
 *.pyc
+data/

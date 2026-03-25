@@ -2,6 +2,7 @@ streamlit
 langchain>=0.3.0
 langchain-classic
 langchain-openai
+langchain-core
 langchain-community
 chromadb
 python-dotenv
