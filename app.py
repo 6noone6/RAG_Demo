@@ -1,25 +1,26 @@
+import logging  # 🌟 新增：引入 Python 内置的日志模块
 import os
 import tempfile
 import uuid
-import logging  # 🌟 新增：引入 Python 内置的日志模块
-import langchain  # 🌟 新增：引入 langchain 全局配置
-import streamlit as st
 from datetime import datetime
-from dotenv import load_dotenv
 
+import streamlit as st
+from dotenv import load_dotenv
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains.retrieval import create_retrieval_chain
 # --- RAG 和 LangChain 核心组件 ---
-from langchain_classic.retrievers import ContextualCompressionRetriever, MultiQueryRetriever  # 🌟 新增：多查询重写器
+from langchain_classic.retrievers import ContextualCompressionRetriever, MultiQueryRetriever, \
+    EnsembleRetriever  # 🌟 新增：多查询重写器
+from langchain_cohere import CohereRerank
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts import PromptTemplate  # 🌟 新增：用于自定义重写 Prompt
 from langchain_openai import ChatOpenAI
-from langchain_cohere import CohereRerank
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_classic.chains import create_retrieval_chain, create_history_aware_retriever
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
-from load_and_split_document import load_and_split_document
-from Embedding_Vector_Store import create_memory_db, create_persistent_db, get_persistent_db
+from Embedding_Vector_Store import create_memory_db, get_persistent_db
 from chat_storage import init_db, save_session, load_all_sessions  # 🌟 新增：引入数据库模块
+from load_and_split_document import load_and_split_document
 
 # ================= 🌟 新增：开启透视日志 =================
 # 1. 配置基础的打印格式
@@ -51,11 +52,16 @@ def get_base_models():
         streaming=True,
         base_url=os.getenv("OPENAI_API_BASE", "https://xiaoai.plus/v1")
     )
+
+    query_len = len(user_input)
+    top_n = 5 if query_len < 50 else 8
+
     compressor = CohereRerank(
         cohere_api_key=os.getenv("COHERE_API_KEY"),
         model="rerank-multilingual-v3.0",
-        top_n=5
+        top_n=top_n
     )
+
     return llm, compressor
 
 
@@ -136,6 +142,8 @@ with st.sidebar:
                     tmp_file_path = tmp_file.name
                 try:
                     chunks = load_and_split_document(tmp_file_path)
+                    st.session_state.bm25 = BM25Retriever.from_documents(chunks)
+                    st.session_state.bm25.k = 8
                     st.session_state.vector_db = create_memory_db(chunks)
                     st.session_state.db_ready = True
                     st.success(f"✅ 构建成功！共处理 {len(chunks)} 个文本块。")
@@ -219,19 +227,37 @@ else:
                 # 1. 定义问题拆解的 Prompt
                 rewrite_prompt = PromptTemplate(
                     input_variables=["question"],
-                    template="""你是一个专业的 AI 检索助手。用户的原始问题可能比较模糊，或者包含多个层面的意图。
-                    请将下面的【原始问题】拆解、重写为 3 个更具体、更利于向量数据库检索的【独立子问题】。
-                    这些子问题应该覆盖原始问题的不同角度。直接输出这 3 个问题，用换行符隔开，不要任何废话。
+                    template="""
+                你是一个专业的信息检索优化助手。
 
-                    原始问题: {question}"""
+                请将【原始问题】改写为 3 个高质量检索问题，要求：
+                1. 每个问题关注不同语义角度
+                2. 不要重复
+                3. 更具体、更适合向量检索
+                4. 保留原问题核心含义
+
+                只输出 3 行，每行一个问题，不要解释。
+
+                原始问题: {question}
+                """
                 )
 
                 # 2. 原始的向量库检索器
-                base_retriever = vector_db.as_retriever(search_kwargs={"k": 8})
+                base_retriever = vector_db.as_retriever(search_kwargs=search_kwargs)
+
+                # BM25（只在有 chunks 时）
+                if "bm25" in st.session_state:
+                    bm25_retriever = st.session_state.bm25
+                    hybrid_retriever = EnsembleRetriever(
+                        retrievers=[bm25_retriever, base_retriever],
+                        weights=[0.4, 0.6]
+                    )
+                else:
+                    hybrid_retriever = base_retriever
 
                 # 3. 包装成 MultiQueryRetriever（自动调用 LLM 进行拆解，并汇集所有子问题的结果）
                 multi_query_retriever = MultiQueryRetriever.from_llm(
-                    retriever=base_retriever,
+                    retriever=hybrid_retriever,
                     llm=llm,
                     prompt=rewrite_prompt
                 )
@@ -253,7 +279,14 @@ else:
                 ])
 
                 # 这里将包含子问题拆解的检索器传入
-                history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
+                # 手动改写问题（history-aware）
+                response = llm.invoke(
+                    contextualize_q_prompt.format_messages(
+                        chat_history=chat_history,
+                        input=user_input
+                    )
+                )
+                standalone_question = response.content.strip()
 
                 qa_prompt = ChatPromptTemplate.from_messages([
                     ("system",
@@ -262,7 +295,7 @@ else:
                     ("human", "{input}"),
                 ])
                 question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-                rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+                rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
                 # 当所有准备工作瞬间完成后，将状态栏打个勾，并自动折叠收起！
                 status.update(label="✅ 检索提纯完毕，开始生成回答！", state="complete", expanded=False)
@@ -281,7 +314,7 @@ else:
                 context_docs = []
                 try:
                     for chunk in rag_chain.stream({
-                        "input": user_input,
+                        "input": standalone_question,
                         "chat_history": chat_history
                     }):
                         if "context" in chunk:

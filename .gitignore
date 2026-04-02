@@ -3,3 +3,4 @@ chroma_db_dynamic/
 __pycache__/
 *.pyc
 data/
+chat_history.db

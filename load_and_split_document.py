@@ -131,12 +131,17 @@ def load_and_split_document(file_path):
 
         # 启发式规则：如果文本中出现了单独的 "references" 或 "参考文献" 作为小节标题
         # 且通常出现在文档的后半段，我们就把开关打开
-        if "\nreferences\n" in content_lower or "\n参考文献\n" in content_lower or content_lower.startswith(
-                "references\n"):
-            is_reference_section = True
+        keywords = ["references", "reference", "bibliography", "参考文献"]
 
-        # 根据开关状态，给当前的 chunk 打上 section 标签
-        chunk.metadata["section"] = "references" if is_reference_section else "main_body"
+        for idx, chunk in enumerate(chunks):
+            content_lower = chunk.page_content.lower()
+
+            if any(k in content_lower for k in keywords) and idx > len(chunks) * 0.6:
+                is_reference_section = True
+
+            # 根据开关状态，给当前的 chunk 打上 section 标签
+            chunk.metadata["section"] = "references" if is_reference_section else "main_body"
+
     # =======================================================================
 
     return chunks
