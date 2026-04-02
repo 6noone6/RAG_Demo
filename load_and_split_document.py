@@ -108,39 +108,62 @@ def load_and_split_document(file_path):
         f"⚙️ 动态切分触发 -> 格式: {file_extension}, 大小: {file_size_bytes / 1024 / 1024:.2f} MB | Chunk: {chunk_size}, Overlap: {chunk_overlap}")
 
     # 3. 实例化切分器并切分
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-    chunks = text_splitter.split_documents(docs)
+    #    智能切分（避免破坏 PDF 结构）
+    if file_extension == ".pdf":
+        new_chunks = []
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+
+        for doc in docs:
+            if len(doc.page_content) > chunk_size:
+                new_chunks.extend(splitter.split_documents([doc]))
+            else:
+                new_chunks.append(doc)
+
+        chunks = new_chunks
+    else:
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+        chunks = text_splitter.split_documents(docs)
 
     # 4. 过滤掉内容过短的无效块
     chunks = [c for c in chunks if len(c.page_content.strip()) > 50]
 
-    # ================= 🌟 核心升级：动态区域打标与元数据清洗 =================
-    is_reference_section = False  # 状态开关：默认一开始都是正文
-
+    # ================= 🌟 新增：标题增强 =================
     for chunk in chunks:
-        # 清洗掉列表和字典（防止 Chroma 报错）
+        title = chunk.metadata.get("title") or chunk.metadata.get("source", "")
+        if title:
+            chunk.page_content = f"{title}\n{chunk.page_content}"
+
+    # ================= 🌟 新增：metadata增强 =================
+    for idx, chunk in enumerate(chunks):
+        chunk.metadata.update({
+            "chunk_id": idx,
+            "source": file_path,
+            "length": len(chunk.page_content)
+        })
+
+    # ================= 🌟 核心升级：动态区域打标与元数据清洗 =================
+    # ================= 🌟 修复：reference 区域标记 =================
+    is_reference_section = False
+    keywords = ["references", "reference", "bibliography", "参考文献"]
+
+    for idx, chunk in enumerate(chunks):
+        # 清洗 metadata（防止 Chroma 报错）
         for key, value in list(chunk.metadata.items()):
             if isinstance(value, (list, dict)):
                 del chunk.metadata[key]
 
-        # 将文本转小写，方便匹配
         content_lower = chunk.page_content.lower()
 
-        # 启发式规则：如果文本中出现了单独的 "references" 或 "参考文献" 作为小节标题
-        # 且通常出现在文档的后半段，我们就把开关打开
-        keywords = ["references", "reference", "bibliography", "参考文献"]
+        if any(k in content_lower[:100] for k in keywords) and idx > len(chunks) * 0.6:
+            is_reference_section = True
 
-        for idx, chunk in enumerate(chunks):
-            content_lower = chunk.page_content.lower()
-
-            if any(k in content_lower for k in keywords) and idx > len(chunks) * 0.6:
-                is_reference_section = True
-
-            # 根据开关状态，给当前的 chunk 打上 section 标签
-            chunk.metadata["section"] = "references" if is_reference_section else "main_body"
+        chunk.metadata["section"] = "references" if is_reference_section else "main_body"
 
     # =======================================================================
 

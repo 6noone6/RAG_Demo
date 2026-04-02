@@ -53,16 +53,7 @@ def get_base_models():
         base_url=os.getenv("OPENAI_API_BASE", "https://xiaoai.plus/v1")
     )
 
-    query_len = len(user_input)
-    top_n = 5 if query_len < 50 else 8
-
-    compressor = CohereRerank(
-        cohere_api_key=os.getenv("COHERE_API_KEY"),
-        model="rerank-multilingual-v3.0",
-        top_n=top_n
-    )
-
-    return llm, compressor
+    return llm
 
 
 # ================= 2. 状态初始化：从 SQLite 加载历史 =================
@@ -142,7 +133,8 @@ with st.sidebar:
                     tmp_file_path = tmp_file.name
                 try:
                     chunks = load_and_split_document(tmp_file_path)
-                    st.session_state.bm25 = BM25Retriever.from_documents(chunks)
+                    filtered_chunks = [c for c in chunks if c.metadata.get("section") != "references"]
+                    st.session_state.bm25 = BM25Retriever.from_documents(filtered_chunks)
                     st.session_state.bm25.k = 8
                     st.session_state.vector_db = create_memory_db(chunks)
                     st.session_state.db_ready = True
@@ -191,7 +183,17 @@ else:
         with st.status("🧠 AI 正在深度思考中...", expanded=True) as status:
             try:
                 st.write("1️⃣ 正在唤醒大模型与本地向量库...")
-                llm, compressor = get_base_models()
+                llm = get_base_models()
+
+                query_len = len(user_input)
+                top_n = 5 if query_len < 50 else 8
+
+                compressor = CohereRerank(
+                    cohere_api_key=os.getenv("COHERE_API_KEY"),
+                    model="rerank-multilingual-v3.0",
+                    top_n=top_n
+                )
+
                 vector_db = st.session_state.vector_db
 
                 # ================= 🌟 核心大升级：多查询与重写 (Query Decomposition) =================
@@ -225,21 +227,20 @@ else:
 
                 st.write("3️⃣ 正在拆解多路子问题并进行过滤检索...")
                 # 1. 定义问题拆解的 Prompt
+                # 1. 定义问题拆解的 Prompt (🌟 动态意图适配版)
                 rewrite_prompt = PromptTemplate(
                     input_variables=["question"],
                     template="""
-                你是一个专业的信息检索优化助手。
+                                你是一个高级信息检索专家。请根据用户的原始问题，生成 3 个高质量的检索查询，以最大化向量数据库的召回率。
 
-                请将【原始问题】改写为 3 个高质量检索问题，要求：
-                1. 每个问题关注不同语义角度
-                2. 不要重复
-                3. 更具体、更适合向量检索
-                4. 保留原问题核心含义
+                                【核心要求】：
+                                1. 紧扣用户真实意图！如果用户问的是基础信息（如题目、作者、机构、发表时间），请只围绕这些基础属性语境进行同义替换或中英文转换，**绝对不要**强行添加“实验、方法、结论”等无关的学术词汇。
+                                2. 如果用户问的是深度学术问题，再从多维度（如核心机制、实验效果、对比分析）进行拆解。
+                                3. 尽量使用“论文检索风格”的关键词表达。
+                                4. 只输出 3 行，每行一个纯粹的查询句子，不要有序号或其他多余字符。
 
-                只输出 3 行，每行一个问题，不要解释。
-
-                原始问题: {question}
-                """
+                                原始问题: {question}
+                                """
                 )
 
                 # 2. 原始的向量库检索器
@@ -250,7 +251,7 @@ else:
                     bm25_retriever = st.session_state.bm25
                     hybrid_retriever = EnsembleRetriever(
                         retrievers=[bm25_retriever, base_retriever],
-                        weights=[0.4, 0.6]
+                        weights=[0.3, 0.7]
                     )
                 else:
                     hybrid_retriever = base_retriever
@@ -273,7 +274,13 @@ else:
                 # 结合历史上下文的 Prompt
                 contextualize_q_prompt = ChatPromptTemplate.from_messages([
                     ("system",
-                     "给定聊天历史记录和最新问题（该问题可能引用了历史）。请生成一个脱离历史也能被理解的独立问题。不要回答，仅仅重写它。"),
+                     """
+                     你是一个信息检索优化助手。请将用户问题改写为一个：
+                        1. 消除指代（结合历史）
+                        2. 语义完整
+                        3. 包含关键检索词（如 方法、实验、结果、优势等）
+                        不要解释，只输出改写后的问题。
+                     """),
                     MessagesPlaceholder("chat_history"),
                     ("human", "{input}"),
                 ])
@@ -289,11 +296,37 @@ else:
                 standalone_question = response.content.strip()
 
                 qa_prompt = ChatPromptTemplate.from_messages([
-                    ("system",
-                     "你是一个严谨的 AI 知识助手。请严格根据以下【上下文内容】来回答。\n\n【上下文内容】：\n{context}"),
+                    ("system", """
+                你是一个严谨的 AI 学术助手，请严格遵守以下规则：
+
+                【核心规则】
+                1. 只能基于提供的【上下文内容】回答问题
+                2. 如果上下文中没有明确答案，必须回答：无法从提供的资料中找到答案
+                3. 严禁使用自身知识进行补充或猜测
+
+                【回答要求】
+                1. 优先给出简洁明确的结论
+                2. 所有关键结论必须来自上下文
+                3. 尽量使用“根据资料...”这样的表达
+                4. 保持专业、客观，不要口语化
+
+                【引用规则（重要）】
+                1. 回答中涉及事实时，尽量对应上下文内容
+                2. 不要编造不存在的信息
+                3. 内容必须可追溯
+                
+                【输出格式】
+                - 先给出简要结论
+                - 再分点说明
+                - 在关键句后标注来源编号，例如 [1] [2]
+
+                【上下文内容】
+                {context}
+                """),
                     MessagesPlaceholder("chat_history"),
                     ("human", "{input}"),
                 ])
+
                 question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
                 rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 

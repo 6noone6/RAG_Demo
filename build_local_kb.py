@@ -1,4 +1,7 @@
+import hashlib
 import os
+from datetime import datetime
+
 from load_and_split_document import load_and_split_document
 from Embedding_Vector_Store import create_persistent_db
 from dotenv import load_dotenv
@@ -17,13 +20,18 @@ def build_offline_knowledge_base(data_folder="data", persist_dir="chroma_db_dyna
         print("👇 请把你的 PDF、TXT、DOCX 或 CSV 文件放进这个文件夹，然后重新运行本脚本！")
         return
 
-    valid_files = [f for f in os.listdir(data_folder) if not f.startswith('.')]
+    allowed_ext = (".pdf", ".txt", ".docx", ".csv")
+
+    valid_files = [
+        f for f in os.listdir(data_folder)
+        if f.endswith(allowed_ext)
+    ]
 
     if not valid_files:
         print(f"⚠️ '{data_folder}' 文件夹是空的，请放入文档后再试。")
         return
 
-    all_chunks = []
+    # all_chunks = []
     print(f"🚀 开始扫描 '{data_folder}' 文件夹，共发现 {len(valid_files)} 个文件...")
 
     # 2. 遍历文件夹，挨个解析文件
@@ -35,27 +43,25 @@ def build_offline_knowledge_base(data_folder="data", persist_dir="chroma_db_dyna
             # 调用你之前写好的终极加载与切分工厂
             chunks = load_and_split_document(file_path)
 
-            # 🌟 顺手把文件名写进 metadata，方便前端完美展示溯源！
+            # ================= 🌟 升级：增强 metadata =================
             for chunk in chunks:
-                chunk.metadata["source"] = file_name
+                chunk.metadata.update({
+                    "source": file_name,
+                    "file_type": os.path.splitext(file_name)[1],
+                    "ingest_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "doc_id": hashlib.md5(chunk.page_content.encode("utf-8")).hexdigest()
+                })
 
-            all_chunks.extend(chunks)
+            # ========================================================
+
+            # ================= 🌟 新增：分批写入 =================
+            print(f"   💾 写入 {len(chunks)} 个 chunks...")
+            create_persistent_db(chunks=chunks, persist_dir=persist_dir)
+            # ====================================================
+
             print(f"   ✅ {file_name} 解析成功，切分出 {len(chunks)} 个文本块。")
         except Exception as e:
             print(f"   ❌ {file_name} 解析失败跳过: {e}")
-
-    # 3. 统一写入 Chroma 数据库并持久化
-    if all_chunks:
-        print(f"\n🧠 所有文件解析完毕！总计获取 {len(all_chunks)} 个文本块。")
-        print("💾 正在调用 Embedding 模型计算向量，并写入本地 SQLite 硬盘...")
-
-        # 调用你写好的持久化函数
-        create_persistent_db(chunks=all_chunks, persist_dir=persist_dir)
-
-        print("\n🎉 灌库大功告成！")
-        print("👉 现在你可以去运行 `streamlit run app.py`，并在网页左侧选择【加载本地大底座 (硬盘)】进行对话了！")
-    else:
-        print("\n⚠️ 未获取到任何有效文本块，请检查文档内容。")
 
 
 if __name__ == "__main__":

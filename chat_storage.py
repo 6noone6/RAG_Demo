@@ -5,10 +5,14 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 DB_FILE = "chat_history.db"
 
+def get_conn():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
+
 
 def init_db():
     """初始化 SQLite 数据库，建表"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_conn()
+
     cursor = conn.cursor()
     # 创建会话表
     cursor.execute('''
@@ -32,14 +36,26 @@ def init_db():
 
 def save_session(session_id, title, messages, created_at):
     """保存或更新单个会话"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_conn()
+
     cursor = conn.cursor()
+
+    # ================= 🌟 新增：限制历史长度 =================
+    MAX_MESSAGES = 20
+    # 保留最近对话，但尽量保留完整轮次（user+assistant）
+    if len(messages) > MAX_MESSAGES:
+        messages = messages[-MAX_MESSAGES:]
+    # =======================================================
 
     # 序列化 LangChain 的消息对象为 JSON
     msg_list = []
     for msg in messages:
         role = "user" if isinstance(msg, HumanMessage) else "assistant"
-        msg_list.append({"role": role, "content": msg.content})
+        msg_list.append({
+            "role": role,
+            "content": msg.content,
+            "timestamp": datetime.now().strftime("%H:%M:%S")
+        })
 
     messages_json = json.dumps(msg_list, ensure_ascii=False)
     created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -57,7 +73,8 @@ def save_session(session_id, title, messages, created_at):
 
 def load_all_sessions():
     """加载所有历史会话，转换为 st.session_state 需要的字典格式"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_conn()
+
     cursor = conn.cursor()
     cursor.execute("SELECT session_id, title, created_at, messages FROM sessions")
     rows = cursor.fetchall()
